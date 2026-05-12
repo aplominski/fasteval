@@ -1,0 +1,15 @@
+[project]
+name = "fasteval"
+version = "0.1.0"
+description = "Fast LLM evaluation framework with vLLM backends"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "vllm>=0.6.0",
+    "torch>=2.0.0",
+    "datasets>=2.14.0",
+    "tqdm>=4.64.0",
+]
+
+[project.scripts]
+fasteval = "fasteval.cli:main"
