@@ -16,7 +16,6 @@ class VLLMBackend(Backend):
         self._sampling_params = SamplingParams(
             temperature=0,
             max_tokens=400,
-            disable_tqdm=True,
         )
         self._batch_size = batch_size
         self._cache_dir = Path(".fasteval_cache") / self._sanitize_model_name(model)
