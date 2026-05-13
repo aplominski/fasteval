@@ -10,16 +10,16 @@ from fasteval.progress import ProgressBar
 class VLLMBackend(Backend):
     def __init__(self, model: str, batch_size: int | str = 1, **llm_kwargs):
         self._model_name = model
-        self._llm = LLM(model=model, **llm_kwargs)
+        self._llm = LLM(
+            model=model, **{k: v for k, v in llm_kwargs.items() if v is not None}
+        )
         self._sampling_params = SamplingParams(
             temperature=0,
             max_tokens=400,
             disable_tqdm=True,
         )
         self._batch_size = batch_size
-        self._cache_dir = (
-            Path(".fasteval_cache") / self._sanitize_model_name(model)
-        )
+        self._cache_dir = Path(".fasteval_cache") / self._sanitize_model_name(model)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -67,9 +67,7 @@ class VLLMBackend(Backend):
                 raise
 
         cache_file.write_text(
-            json.dumps(
-                {"batch_size": last_ok, "model": self._model_name}, indent=2
-            )
+            json.dumps({"batch_size": last_ok, "model": self._model_name}, indent=2)
         )
         return last_ok
 
