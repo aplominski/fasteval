@@ -7,6 +7,14 @@ import sys
 import time
 from pathlib import Path
 
+from fasteval.base import BenchmarkResult
+
+
+BENCHMARK_REGISTRY: dict[str, tuple[str, str]] = {
+    "gsm8k": ("benchmarks.gsm8k", "GSM8KBenchmark"),
+    "mmlu": ("benchmarks.mmlu", "MMLUBenchmark"),
+}
+
 
 def _resolve(submodule: str, name: str):
     mod = importlib.import_module(f"fasteval.{submodule}")
@@ -26,6 +34,8 @@ def _worker(
     attention_backend: str | None,
     queue: mp.Queue,
     worker_id: int,
+    quiet: bool = False,
+    mode: str = "fullgen",
 ):
     try:
         os.environ["CUDA_VISIBLE_DEVICES"] = device.replace("cuda:", "")
@@ -35,9 +45,15 @@ def _worker(
             batch_size=batch,
             tensor_parallel_size=tensor_parallel_size,
             attention_backend=attention_backend,
+            quiet=quiet,
         )
         bs = backend.batch_size
-        responses = backend.generate(prompts, batch_size=bs)
+        if mode == "onepass":
+            choices = [["A", "B", "C", "D"]] * len(prompts)
+            answer_indices = backend.score_answers(prompts, bs, choices)
+            responses = [chr(65 + idx) for idx in answer_indices]
+        else:
+            responses = backend.generate(prompts, batch_size=bs)
         queue.put((worker_id, None, responses))
     except Exception as e:
         queue.put((worker_id, str(e), None))
@@ -50,6 +66,8 @@ def run_distributed(
     batch: str,
     tensor_parallel_size: int,
     attention_backend: str | None = None,
+    quiet: bool = False,
+    mode: str = "fullgen",
 ) -> list[str]:
     mp.set_start_method("spawn", force=True)
     n = len(devices)
@@ -69,6 +87,8 @@ def run_distributed(
                 attention_backend,
                 queue,
                 i,
+                quiet,
+                mode,
             ),
         )
         p.start()
@@ -99,6 +119,24 @@ def run_distributed(
     return all_results
 
 
+def _run_benchmark(
+    benchmark,
+    backend,
+    prompts,
+    batch_size,
+    args_devices,
+    mode: str,
+    quiet: bool,
+):
+    if mode == "onepass":
+        choices = [["A", "B", "C", "D"]] * len(prompts)
+        answer_indices = backend.score_answers(prompts, batch_size, choices)
+        responses = [chr(65 + idx) for idx in answer_indices]
+    else:
+        responses = backend.generate(prompts, batch_size)
+    return benchmark.score(responses)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="fasteval",
@@ -109,7 +147,9 @@ def main():
         required=True,
         help="HuggingFace model name (e.g. meta-llama/Llama-3-8B-Instruct)",
     )
-    parser.add_argument("benchmark", choices=["gsm8k"])
+    parser.add_argument(
+        "benchmark", help="Comma-separated benchmarks (e.g. gsm8k,mmlu)"
+    )
     parser.add_argument(
         "--batch",
         default="auto",
@@ -141,71 +181,91 @@ def main():
 
     args = parser.parse_args()
 
-    bench_cls = _resolve("benchmarks.gsm8k", "GSM8KBenchmark")
-    benchmark = bench_cls(num_samples=args.samples)
-    print(f"Loading {benchmark.name} dataset...")
-    benchmark.load()
+    benchmark_names = [b.strip() for b in args.benchmark.split(",")]
 
-    prompts = benchmark.build_prompts()
-    print(f"Samples: {len(prompts)}")
+    for idx, bench_name in enumerate(benchmark_names):
+        if bench_name not in BENCHMARK_REGISTRY:
+            sys.exit(
+                f"Unknown benchmark: {bench_name} (available: {', '.join(BENCHMARK_REGISTRY)})"
+            )
 
-    start = time.time()
+        module_name, class_name = BENCHMARK_REGISTRY[bench_name]
+        bench_cls = _resolve(module_name, class_name)
+        benchmark = bench_cls(num_samples=args.samples)
 
-    if args.devices:
-        devices = args.devices
-        print(f"Devices: {', '.join(devices)}")
-        responses = run_distributed(
-            prompts,
-            args.model,
-            devices,
-            args.batch,
-            args.tensor_parallel_size,
-            args.attention_backend,
-        )
-    else:
-        VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
-        backend = VLLMBackend(
-            model=args.model,
-            batch_size=args.batch,
-            tensor_parallel_size=args.tensor_parallel_size,
-            attention_backend=args.attention_backend,
-        )
-        bs = backend.batch_size
-        print(f"Batch size: {bs}")
-        responses = backend.generate(prompts, batch_size=bs)
+        mode = "fullgen" if bench_name == "gsm8k" else "onepass"
+        quiet = bench_name == "gsm8k"
+        desc_batch = "auto" if args.batch == "auto" else args.batch
 
-    elapsed = time.time() - start
+        if not quiet:
+            print(f"[{bench_name}] Loading dataset...")
+        benchmark.load()
+        prompts = benchmark.build_prompts()
+        if not quiet:
+            print(
+                f"[{bench_name}] Samples: {len(prompts)}, batch: {desc_batch}, mode: {mode}"
+            )
 
-    result = benchmark.score(responses)
-    result.model = args.model
-    result.time_seconds = elapsed
+        start = time.time()
 
-    print()
-    print("=" * 60)
-    print(f"  Benchmark:  {result.name}")
-    print(f"  Model:      {result.model}")
-    print(f"  Accuracy:   {result.accuracy:.1%}  ({result.correct}/{result.total})")
-    print(f"  Time:       {elapsed:.1f}s")
-    if args.devices:
-        print(f"  Devices:    {', '.join(args.devices)}")
-    print("=" * 60)
+        if args.devices:
+            responses = run_distributed(
+                prompts,
+                args.model,
+                args.devices,
+                args.batch,
+                args.tensor_parallel_size,
+                args.attention_backend,
+                quiet=quiet,
+                mode=mode,
+            )
+            result = benchmark.score(responses)
+        else:
+            VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
+            backend = VLLMBackend(
+                model=args.model,
+                batch_size=args.batch,
+                tensor_parallel_size=args.tensor_parallel_size,
+                attention_backend=args.attention_backend,
+                quiet=quiet,
+            )
+            bs = backend.batch_size
+            result = _run_benchmark(
+                benchmark, backend, prompts, bs, args.devices, mode, quiet
+            )
 
-    results_dir = Path("results")
-    results_dir.mkdir(exist_ok=True)
-    safe_name = args.model.replace("/", "__").replace(":", "_")
-    result_path = results_dir / f"{result.name}__{safe_name}.json"
-    with open(result_path, "w") as f:
-        json.dump(
-            {
-                "benchmark": result.name,
-                "model": result.model,
-                "accuracy": result.accuracy,
-                "correct": result.correct,
-                "total": result.total,
-                "time_seconds": result.elapsed,
-                "devices": args.devices,
-            },
-            f,
-            indent=2,
-        )
-    print(f"\nResults saved to {result_path}")
+        elapsed = time.time() - start
+        result.model = args.model
+        result.time_seconds = elapsed
+
+        if idx > 0:
+            print()
+        print("=" * 60)
+        print(f"  Benchmark:  {result.name}")
+        print(f"  Model:      {result.model}")
+        print(f"  Accuracy:   {result.accuracy:.1%}  ({result.correct}/{result.total})")
+        print(f"  Time:       {elapsed:.1f}s")
+        if args.devices:
+            print(f"  Devices:    {', '.join(args.devices)}")
+        print("=" * 60)
+
+        results_dir = Path("results")
+        results_dir.mkdir(exist_ok=True)
+        safe_name = args.model.replace("/", "__").replace(":", "_")
+        result_path = results_dir / f"{result.name}__{safe_name}.json"
+        with open(result_path, "w") as f:
+            json.dump(
+                {
+                    "benchmark": result.name,
+                    "model": result.model,
+                    "accuracy": result.accuracy,
+                    "correct": result.correct,
+                    "total": result.total,
+                    "time_seconds": result.time_seconds,
+                    "devices": args.devices,
+                },
+                f,
+                indent=2,
+            )
+        if not quiet:
+            print(f"Results saved to {result_path}")
