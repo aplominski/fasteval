@@ -1,0 +1,27 @@
+name: Auto Release
+
+on:
+  push:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use commit SHA as unique tag
+          TAG="release-${GITHUB_SHA}"
+
+          # Create release (ignore error if already exists)
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes "Automated release from commit $GITHUB_SHA" || true
