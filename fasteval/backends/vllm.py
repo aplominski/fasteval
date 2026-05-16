@@ -8,11 +8,8 @@ from fasteval.progress import ProgressBar
 
 
 class VLLMBackend(Backend):
-    def __init__(
-        self, model: str, batch_size: int | str = 1, quiet: bool = False, **llm_kwargs
-    ):
+    def __init__(self, model: str, batch_size: int | str = 1, **llm_kwargs):
         self._model_name = model
-        self._quiet = quiet
         self._llm = LLM(
             model=model, **{k: v for k, v in llm_kwargs.items() if v is not None}
         )
@@ -34,24 +31,13 @@ class VLLMBackend(Backend):
 
     def generate(self, prompts: list[str], batch_size: int) -> list[str]:
         results: list[str] = []
-        pbar = (
-            ProgressBar(total=len(prompts), desc=self._model_name)
-            if not self._quiet
-            else None
-        )
-        if pbar:
-            pbar.__enter__()
-        try:
+        with ProgressBar(total=len(prompts), desc=self._model_name) as pbar:
             for i in range(0, len(prompts), batch_size):
                 batch = prompts[i : i + batch_size]
                 outputs = self._llm.generate(batch, self._sampling_params)
                 for output in outputs:
                     results.append(output.outputs[0].text.strip())
-                if pbar:
-                    pbar.update(len(batch))
-        finally:
-            if pbar:
-                pbar.__exit__(None, None, None)
+                pbar.update(len(batch))
         return results
 
     def score_answers(
@@ -64,14 +50,9 @@ class VLLMBackend(Backend):
         )
         tokenizer = self._llm.get_tokenizer()
         results: list[int] = []
-        pbar = (
-            ProgressBar(total=len(prompts), desc=f"{self._model_name} (logprobs)")
-            if not self._quiet
-            else None
-        )
-        if pbar:
-            pbar.__enter__()
-        try:
+        with ProgressBar(
+            total=len(prompts), desc=f"{self._model_name} (logprobs)"
+        ) as pbar:
             for i in range(0, len(prompts), batch_size):
                 batch = prompts[i : i + batch_size]
                 batch_choices = choices[i : i + batch_size]
@@ -90,11 +71,7 @@ class VLLMBackend(Backend):
                                 best_lp = lp
                                 best_idx = j
                     results.append(best_idx)
-                if pbar:
-                    pbar.update(len(batch))
-        finally:
-            if pbar:
-                pbar.__exit__(None, None, None)
+                pbar.update(len(batch))
         return results
 
     def auto_batch(self) -> int:

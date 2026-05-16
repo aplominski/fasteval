@@ -34,7 +34,6 @@ def _worker(
     attention_backend: str | None,
     queue: mp.Queue,
     worker_id: int,
-    quiet: bool = False,
     mode: str = "fullgen",
 ):
     try:
@@ -45,7 +44,6 @@ def _worker(
             batch_size=batch,
             tensor_parallel_size=tensor_parallel_size,
             attention_backend=attention_backend,
-            quiet=quiet,
         )
         bs = backend.batch_size
         if mode == "onepass":
@@ -66,7 +64,6 @@ def run_distributed(
     batch: str,
     tensor_parallel_size: int,
     attention_backend: str | None = None,
-    quiet: bool = False,
     mode: str = "fullgen",
 ) -> list[str]:
     mp.set_start_method("spawn", force=True)
@@ -87,7 +84,6 @@ def run_distributed(
                 attention_backend,
                 queue,
                 i,
-                quiet,
                 mode,
             ),
         )
@@ -119,15 +115,7 @@ def run_distributed(
     return all_results
 
 
-def _run_benchmark(
-    benchmark,
-    backend,
-    prompts,
-    batch_size,
-    args_devices,
-    mode: str,
-    quiet: bool,
-):
+def _run_benchmark(benchmark, backend, prompts, batch_size, mode: str):
     if mode == "onepass":
         choices = [["A", "B", "C", "D"]] * len(prompts)
         answer_indices = backend.score_answers(prompts, batch_size, choices)
@@ -182,29 +170,34 @@ def main():
     args = parser.parse_args()
 
     benchmark_names = [b.strip() for b in args.benchmark.split(",")]
-
-    for idx, bench_name in enumerate(benchmark_names):
-        if bench_name not in BENCHMARK_REGISTRY:
+    for name in benchmark_names:
+        if name not in BENCHMARK_REGISTRY:
             sys.exit(
-                f"Unknown benchmark: {bench_name} (available: {', '.join(BENCHMARK_REGISTRY)})"
+                f"Unknown benchmark: {name} (available: {', '.join(BENCHMARK_REGISTRY)})"
             )
 
+    if not args.devices:
+        VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
+        backend = VLLMBackend(
+            model=args.model,
+            batch_size=args.batch,
+            tensor_parallel_size=args.tensor_parallel_size,
+            attention_backend=args.attention_backend,
+        )
+        bs = backend.batch_size
+        print(f"Batch size: {bs}")
+
+    for idx, bench_name in enumerate(benchmark_names):
         module_name, class_name = BENCHMARK_REGISTRY[bench_name]
         bench_cls = _resolve(module_name, class_name)
         benchmark = bench_cls(num_samples=args.samples)
 
         mode = "fullgen" if bench_name == "gsm8k" else "onepass"
-        quiet = bench_name == "gsm8k"
-        desc_batch = "auto" if args.batch == "auto" else args.batch
 
-        if not quiet:
-            print(f"[{bench_name}] Loading dataset...")
+        print(f"[{bench_name}] Loading dataset...")
         benchmark.load()
         prompts = benchmark.build_prompts()
-        if not quiet:
-            print(
-                f"[{bench_name}] Samples: {len(prompts)}, batch: {desc_batch}, mode: {mode}"
-            )
+        print(f"[{bench_name}] Samples: {len(prompts)}, mode: {mode}")
 
         start = time.time()
 
@@ -216,23 +209,11 @@ def main():
                 args.batch,
                 args.tensor_parallel_size,
                 args.attention_backend,
-                quiet=quiet,
                 mode=mode,
             )
             result = benchmark.score(responses)
         else:
-            VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
-            backend = VLLMBackend(
-                model=args.model,
-                batch_size=args.batch,
-                tensor_parallel_size=args.tensor_parallel_size,
-                attention_backend=args.attention_backend,
-                quiet=quiet,
-            )
-            bs = backend.batch_size
-            result = _run_benchmark(
-                benchmark, backend, prompts, bs, args.devices, mode, quiet
-            )
+            result = _run_benchmark(benchmark, backend, prompts, bs, mode)
 
         elapsed = time.time() - start
         result.model = args.model
@@ -267,5 +248,4 @@ def main():
                 f,
                 indent=2,
             )
-        if not quiet:
-            print(f"Results saved to {result_path}")
+        print(f"Results saved to {result_path}")
