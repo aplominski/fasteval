@@ -5,3 +5,6 @@ authors:
     given-names: Aleksander
     orcid: https://orcid.org/0009-0002-6889-4349
 title: "Fasteval: Fast LLM Evalutation Software"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20234224
