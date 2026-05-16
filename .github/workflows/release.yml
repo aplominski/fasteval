@@ -21,7 +21,10 @@ jobs:
           # Use commit SHA as unique tag
           TAG="release-${GITHUB_SHA}"
 
+          # Read README.md as release notes
+          NOTES=$(cat README.md)
+
           # Create release (ignore error if already exists)
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "Automated release from commit $GITHUB_SHA" || true
+            --notes "$NOTES" || true

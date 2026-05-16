@@ -95,3 +95,10 @@ fasteval/
 ├── results/                  # JSON output
 └── .fasteval_cache/          # per-model batch cache
 ```
+
+## Citation
+
+If you use this harness in your research, please cite it as:
+```bibtex
+@misc{https://doi.org/10.5281/zenodo.20234224,  doi = {10.5281/ZENODO.20234224},  url = {https://zenodo.org/doi/10.5281/zenodo.20234224},  author = {Płomiński, Aleksander},  title = {Fasteval: Fast LLM Evaluation Software},  publisher = {Zenodo},  year = {2026},  copyright = {Creative Commons Attribution 4.0 International}}
+```
