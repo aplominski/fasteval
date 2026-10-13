@@ -181,16 +181,57 @@ def run_distributed(
     return merge_results(ordered, len(prompts))
 
 
-def _run_benchmark(benchmark, backend, prompts, batch_size, mode: str):
+def run_tensor_parallel(
+    prompts: list[str],
+    model: str,
+    devices: list[str],
+    batch: str,
+    attention_backend: str | None = None,
+    mode: str = "fullgen",
+    **llm_kwargs,
+) -> list[str]:
+    """Single vLLM instance with tensor_parallel_size=len(devices).
+
+    Avoids N model copies in VRAM and N load times of data-parallel mode.
+    Requires the model to support tensor parallelism.
+    """
+    devices = [validate_device(d) for d in devices]
+    n = len(devices)
+    if n == 0:
+        raise ValueError("--devices requires at least one device")
+    ids = ",".join(d.split(":")[1] for d in devices)
+    os.environ["CUDA_VISIBLE_DEVICES"] = ids
+    VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
+    backend = VLLMBackend(
+        model=model,
+        batch_size=batch,
+        tensor_parallel_size=n,
+        attention_backend=attention_backend,
+        **llm_kwargs,
+    )
+    try:
+        bs = backend.batch_size
+        return _run_benchmark_inner(backend, prompts, bs, mode)
+    finally:
+        try:
+            backend.close()
+        except Exception:
+            pass
+
+
+def _run_benchmark_inner(backend, prompts, batch_size, mode: str):
     if mode == "onepass":
         choices = [["A", "B", "C", "D"] for _ in range(len(prompts))]
         answer_indices = backend.score_answers(prompts, batch_size, choices)
-        responses = [chr(65 + idx) if idx is not None else "" for idx in answer_indices]
+        return [chr(65 + idx) if idx is not None else "" for idx in answer_indices]
     elif mode == "fullgen":
-        responses = backend.generate(prompts, batch_size)
+        return backend.generate(prompts, batch_size)
     else:
         raise ValueError(f"unknown mode: {mode!r}")
-    return benchmark.score(responses)
+
+
+def _run_benchmark(benchmark, backend, prompts, batch_size, mode: str):
+    return benchmark.score(_run_benchmark_inner(backend, prompts, batch_size, mode))
 
 
 def _validate_args(args) -> None:
@@ -280,13 +321,26 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--attention-backend",
         default=None,
-        help="vLLM attention backend (e.g. FLASH_ATTN, FLASHINFER)",
+        help="vLLM attention backend name (optional; see vLLM docs for names "
+        "supported by your installed version)",
     )
     parser.add_argument(
         "--devices",
         nargs="+",
         default=None,
         help="GPUs to use, e.g. --devices cuda:0 cuda:1 (default: single GPU)",
+    )
+    parser.add_argument(
+        "--dist-strategy",
+        choices=("data-parallel", "tensor-parallel"),
+        default="data-parallel",
+        help="Multi-GPU strategy: data-parallel (one vLLM per GPU) or "
+        "tensor-parallel (single vLLM across GPUs, one model copy)",
+    )
+    parser.add_argument(
+        "--no-prefix-caching",
+        action="store_true",
+        help="Disable vLLM automatic prefix caching",
     )
     parser.add_argument(
         "--output-dir",
@@ -312,6 +366,7 @@ def main(argv: list[str] | None = None):
 
     backend = None
     bs = None
+    llm_extra = {} if not args.no_prefix_caching else {"enable_prefix_caching": False}
     if not args.devices:
         VLLMBackend = _resolve("backends.vllm", "VLLMBackend")
         backend = VLLMBackend(
@@ -319,6 +374,7 @@ def main(argv: list[str] | None = None):
             batch_size=args.batch,
             tensor_parallel_size=args.tensor_parallel_size,
             attention_backend=args.attention_backend,
+            **llm_extra,
         )
         bs = backend.batch_size
         print(f"Batch size: {bs}")
@@ -338,15 +394,26 @@ def main(argv: list[str] | None = None):
         start = time.perf_counter()
 
         if args.devices:
-            responses = run_distributed(
-                prompts,
-                args.model,
-                args.devices,
-                args.batch,
-                args.tensor_parallel_size,
-                args.attention_backend,
-                mode=mode,
-            )
+            if args.dist_strategy == "tensor-parallel":
+                responses = run_tensor_parallel(
+                    prompts,
+                    args.model,
+                    args.devices,
+                    args.batch,
+                    args.attention_backend,
+                    mode=mode,
+                    **llm_extra,
+                )
+            else:
+                responses = run_distributed(
+                    prompts,
+                    args.model,
+                    args.devices,
+                    args.batch,
+                    args.tensor_parallel_size,
+                    args.attention_backend,
+                    mode=mode,
+                )
             result = benchmark.score(responses)
             effective_bs = args.batch
         else:

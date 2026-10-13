@@ -5,8 +5,8 @@ from datasets import load_dataset
 
 from fasteval.base import Benchmark, BenchmarkResult
 
-_HASH_RE = r"####\s*(-?[\d,]*\.?\d+(?:[eE][-+]?\d+)?)"
-_NUMBER_RE = r"(-?[\d,]*\.?\d+(?:[eE][-+]?\d+)?)"
+_HASH_RE = re.compile(r"####\s*(-?[\d,]*\.?\d+(?:[eE][-+]?\d+)?)")
+_NUMBER_RE = re.compile(r"(-?[\d,]*\.?\d+(?:[eE][-+]?\d+)?)")
 
 
 def _parse_number(raw: str) -> float | None:
@@ -73,7 +73,7 @@ class GSM8KBenchmark(Benchmark):
     def _parse_example(item: dict) -> dict:
         clean = re.sub(r"<<[^>]*>>", "", item["answer"]).strip()
         solution = re.sub(r"####.*", "", clean).strip()
-        matches = list(re.finditer(_HASH_RE, item["answer"]))
+        matches = list(_HASH_RE.finditer(item["answer"]))
         answer = _parse_number(matches[-1].group(1)) if matches else None
         return {
             "question": item["question"],
@@ -142,11 +142,11 @@ class GSM8KBenchmark(Benchmark):
         if not text:
             return None
         # Prefer the last #### (the answer), not the first (exemplar echo).
-        matches = list(re.finditer(_HASH_RE, text))
+        matches = list(_HASH_RE.finditer(text))
         if matches:
             return _parse_number(matches[-1].group(1))
         # Fallback: last number in the text (instruct models often skip ####).
-        fallback = list(re.finditer(_NUMBER_RE, text))
+        fallback = list(_NUMBER_RE.finditer(text))
         if fallback:
             return _parse_number(fallback[-1].group(1))
         return None
@@ -155,7 +155,7 @@ class GSM8KBenchmark(Benchmark):
     def _extract_expected(answer_text: str) -> float | None:
         if not answer_text:
             return None
-        matches = list(re.finditer(_HASH_RE, answer_text))
+        matches = list(_HASH_RE.finditer(answer_text))
         if matches:
             return _parse_number(matches[-1].group(1))
         return None
